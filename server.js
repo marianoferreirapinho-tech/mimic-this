@@ -1,0 +1,30 @@
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const crypto = require("crypto");
+const path = require("path");
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*" } });
+app.use(express.static(path.join(__dirname, "public")));
+const games = new Map();
+const decks = {movies:["Titanic","Toy Story","Frozen","Jaws","Rocky","The Lion King","Home Alone","Jurassic Park"],people:["Taylor Swift","Lionel Messi","Beyoncé","Tom Cruise","Adele","Michael Jordan","Lady Gaga","Dwayne Johnson"]};
+const code=()=>crypto.randomBytes(3).toString("hex").toUpperCase(), id=()=>crypto.randomUUID();
+function safeGame(g,playerId){const me=g.players.find(p=>p.id===playerId),actor=g.players.find(p=>p.id===g.turn.actorId),isActor=me?.id===g.turn.actorId,sameTeam=me&&actor&&me.team===actor.team,canKnowWord=isActor||!sameTeam;return{id:g.id,code:g.code,name:g.name,category:g.category,categoryName:g.categoryName,guessingTime:g.guessingTime,status:g.status,scores:g.scores,players:g.players.map(p=>({id:p.id,name:p.name,team:p.team,acted:p.acted,connected:p.connected})),me,turn:{number:g.turn.number,actorId:g.turn.actorId,actorName:actor?.name,word:canKnowWord?g.turn.word:null,videos:g.turn.videos,reactions:g.turn.reactions,guesses:g.turn.guesses,finalAnswer:g.turn.finalAnswer},permissions:{record:isActor,react:!isActor,guess:!!(sameTeam&&!isActor),knowWord:canKnowWord}}}
+function emitGame(g){for(const p of g.players)io.to(p.socketId).emit("game:update",safeGame(g,p.id))}
+function chooseActor(g){const min=Math.min(...g.players.map(p=>p.acted)),eligible=g.players.filter(p=>p.acted===min);return eligible[Math.floor(Math.random()*eligible.length)]}
+function chooseWord(g){const deck=g.category==="custom"?g.customWords:decks[g.category];return deck[Math.floor(Math.random()*deck.length)]}
+function newTurn(g){const actor=chooseActor(g);actor.acted++;g.turn={number:(g.turn?.number||0)+1,actorId:actor.id,word:chooseWord(g),videos:[],reactions:{},guesses:{},finalAnswer:null};g.status="role"}
+io.on("connection",socket=>{
+socket.on("game:create",({name,playerName,category,categoryName,guessingTime,invitees=[],customWords=[]},cb)=>{const gameId=id(),playerId=id();const g={id:gameId,code:code(),name:name||"Mimic This! Game",category,categoryName:categoryName||category,guessingTime,customWords:customWords.length?customWords:["Mom","Dad","Grandma","Uncle John"],status:"lobby",scores:{blue:0,purple:0},players:[{id:playerId,name:playerName||"You",team:"blue",acted:0,socketId:socket.id,connected:true}],turn:{number:0,actorId:null,word:null,videos:[],reactions:{},guesses:{},finalAnswer:null}};invitees.forEach((n,i)=>g.players.push({id:id(),name:n,team:i%2?"blue":"purple",acted:0,socketId:null,connected:false}));games.set(gameId,g);socket.join(gameId);cb?.({gameId,playerId,code:g.code});emitGame(g)});
+socket.on("game:join",({code:joinCode,name},cb)=>{const g=[...games.values()].find(x=>x.code===String(joinCode).toUpperCase());if(!g)return cb?.({error:"Game not found"});let p=g.players.find(x=>x.name.toLowerCase()===String(name).toLowerCase()&&!x.connected);if(!p){p={id:id(),name,team:g.players.filter(x=>x.team==="blue").length<=g.players.filter(x=>x.team==="purple").length?"blue":"purple",acted:0};g.players.push(p)}p.socketId=socket.id;p.connected=true;socket.join(g.id);cb?.({gameId:g.id,playerId:p.id});emitGame(g)});
+socket.on("game:resume",({gameId,playerId})=>{const g=games.get(gameId),p=g?.players.find(x=>x.id===playerId);if(!g||!p)return;p.socketId=socket.id;p.connected=true;socket.join(g.id);emitGame(g)});
+socket.on("game:start",({gameId})=>{const g=games.get(gameId);if(!g)return;newTurn(g);emitGame(g)});
+socket.on("turn:recorded",({gameId,videoLabel})=>{const g=games.get(gameId);if(!g)return;g.turn.videos.push(videoLabel||`Video ${g.turn.videos.length+1}`);g.status="watch";emitGame(g)});
+socket.on("reaction:add",({gameId,playerId,emoji})=>{const g=games.get(gameId);if(!g||playerId===g.turn.actorId)return;g.turn.reactions[playerId]=emoji;emitGame(g)});
+socket.on("guess:vote",({gameId,playerId,answer})=>{const g=games.get(gameId);if(!g)return;const me=g.players.find(p=>p.id===playerId),actor=g.players.find(p=>p.id===g.turn.actorId);if(!me||!actor||me.id===actor.id||me.team!==actor.team)return;g.turn.guesses[playerId]=String(answer).trim();g.status="guess";emitGame(g)});
+socket.on("turn:reveal",({gameId})=>{const g=games.get(gameId);if(!g)return;const counts={};Object.values(g.turn.guesses).forEach(x=>counts[x]=(counts[x]||0)+1);g.turn.finalAnswer=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0]||"";const actor=g.players.find(p=>p.id===g.turn.actorId);if(g.turn.finalAnswer.toLowerCase()===g.turn.word.toLowerCase())g.scores[actor.team]++;g.status="reveal";emitGame(g)});
+socket.on("turn:next",({gameId})=>{const g=games.get(gameId);if(!g)return;newTurn(g);emitGame(g)});
+socket.on("disconnect",()=>{for(const g of games.values()){const p=g.players.find(x=>x.socketId===socket.id);if(p){p.connected=false;emitGame(g)}}});
+});
+const PORT=process.env.PORT||3000;server.listen(PORT,()=>console.log(`Mimic This! v0.4 running on http://localhost:${PORT}`));
