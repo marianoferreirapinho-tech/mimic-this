@@ -4,7 +4,9 @@ const {Server}=require("socket.io");
 const crypto=require("crypto");
 const path=require("path");
 const app=express(),server=http.createServer(app),io=new Server(server,{cors:{origin:"*"}});
-app.use(express.static(path.join(__dirname,"public")));
+app.get("/health",(req,res)=>res.status(200).json({ok:true,service:"mimic-this"}));
+app.use(express.static(path.join(__dirname,"public"),{index:"index.html"}));
+app.get("*",(req,res)=>res.sendFile(path.join(__dirname,"public","index.html")));
 const games=new Map();
 const decks={movies:["Titanic","Toy Story","Frozen","Jaws","Rocky","The Lion King","Home Alone","Jurassic Park"],people:["Taylor Swift","Lionel Messi","Beyoncé","Tom Cruise","Adele","Michael Jordan","Lady Gaga","Dwayne Johnson"]};
 const uid=()=>crypto.randomUUID(),code=()=>crypto.randomBytes(3).toString("hex").toUpperCase();
@@ -49,4 +51,5 @@ io.on("connection",socket=>{
  socket.on("turn:next",({gameId})=>{const g=games.get(gameId);if(!g||g.status!=="reveal")return;newTurn(g);emit(g)});
  socket.on("disconnect",()=>{for(const g of games.values()){const p=g.players.find(x=>x.socketId===socket.id);if(p){p.connected=false;emit(g)}}});
 });
-server.listen(process.env.PORT||3000,()=>console.log("Mimic This! approved-flow build running"));
+const PORT=Number(process.env.PORT)||10000;
+server.listen(PORT,"0.0.0.0",()=>console.log(`Mimic This! listening on 0.0.0.0:${PORT}`));
